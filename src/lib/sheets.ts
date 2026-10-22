@@ -48,13 +48,31 @@ function normalize(value: unknown): string {
 }
 
 function numeric(value: unknown): number {
-  if (typeof value === "number") return value;
-  let s = normalize(value).replace(/Rp/gi, "").replace(/\s/g, "");
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  let s = normalize(value).replace(/Rp/gi, "").replace(/\s/g, "").replace(/[^\d,.-]/g, "");
   if (!s) return 0;
-  // Indonesian number format: 1.234.567,89
-  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
-  else if ((s.match(/\./g) || []).length > 1) s = s.replace(/\./g, "");
-  const n = Number(s.replace(/[^\d.-]/g, ""));
+
+  const comma = s.lastIndexOf(",");
+  const dot = s.lastIndexOf(".");
+
+  // When both separators exist, the last one is treated as the decimal separator:
+  // 1,928,391.00 (US) -> 1928391.00
+  // 1.928.391,00 (ID) -> 1928391.00
+  if (comma >= 0 && dot >= 0) {
+    if (comma > dot) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (comma >= 0) {
+    // Indonesian decimal format, or comma thousands separators.
+    const decimals = s.length - comma - 1;
+    if (decimals > 0 && decimals <= 2) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (dot >= 0) {
+    const dots = (s.match(/\./g) || []).length;
+    const decimals = s.length - dot - 1;
+    if (dots > 1 || decimals === 3) s = s.replace(/\./g, "");
+  }
+
+  const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
 
