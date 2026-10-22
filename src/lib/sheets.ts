@@ -46,6 +46,7 @@ function getSheetsClient() {
 function normalize(value: unknown): string {
   return String(value ?? "").replace(/\u00a0/g, " ").trim();
 }
+
 function numeric(value: unknown): number {
   if (typeof value === "number") return value;
   let s = normalize(value).replace(/Rp/gi, "").replace(/\s/g, "");
@@ -56,12 +57,25 @@ function numeric(value: unknown): number {
   const n = Number(s.replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : 0;
 }
+
+/**
+ * Sheets may contain visually separated transaction groups, each with a
+ * repeated header and a subtotal row. Keep only actual transaction rows.
+ */
 function isTotalRow(row: string[]) {
-  return row.some(v => /total nominal|total pembelian|grand total|jumlah total/i.test(v));
+  const text = row.join(" ").toLowerCase().replace(/\s+/g, " ").trim();
+  return /total\s+nominal\s+setelah\s+di\s+potong\s+biaya\s+admin\s+mtt|total\s+nominal|total\s+pembelian|grand\s+total|jumlah\s+total|subtotal/i.test(text);
 }
+
 function isHeader(row: string[]) {
-  return row.some(v => /nama pekerja/i.test(v)) && row.some(v => /nilai pembelian/i.test(v));
+  const text = row.join(" ").toLowerCase().replace(/\s+/g, " ").trim();
+  // Header names can be repeated in the middle of a tab. Detect common
+  // variants without depending on the exact spacing or punctuation.
+  const hasEmployee = /nama\s*pekerja|nama\s*karyawan/i.test(text);
+  const hasPurchase = /nilai\s*pembelian|pembelian/i.test(text);
+  return hasEmployee && hasPurchase;
 }
+
 function cell(row: string[], idx: number) { return normalize(row[idx]); }
 
 export async function getTransactions(): Promise<{ transactions: Transaction[]; sheets: string[]; updatedAt: string }> {
@@ -89,10 +103,14 @@ export async function getTransactions(): Promise<{ transactions: Transaction[]; 
     for (const rowRaw of rows) {
       logicalRow += 1;
       const row = rowRaw.map(normalize);
+
+      // A repeated header starts another visual group; skip it and continue
+      // flattening all groups into the same transaction list.
       if (isHeader(row)) { headerSeen = true; continue; }
+      // Ignore everything before the first header, blank rows, and subtotal rows.
       if (!headerSeen || row.every(v => !v) || isTotalRow(row)) continue;
 
-      // Column positions follow the sheet screenshot:
+      // Column positions follow the sheet layout:
       // A No.; B date; C employee; D Nopek; F Trip; G Airline/Hotel;
       // H booking; I purchase; J refund; K transfer amount; L account;
       // M company; N transfer status; O description; P/Q/R references.
@@ -100,7 +118,9 @@ export async function getTransactions(): Promise<{ transactions: Transaction[]; 
       const date = cell(row, 1);
       const purchase = numeric(row[8]);
       const refund = numeric(row[9]);
-      const hasTransaction = Boolean(employee || date || cell(row, 7)) && (purchase > 0 || refund > 0 || Boolean(cell(row, 7)));
+      const bookingCode = cell(row, 7);
+      const hasTransaction = Boolean(employee || date || bookingCode) &&
+        (purchase > 0 || refund > 0 || Boolean(bookingCode));
       if (!hasTransaction) continue;
 
       transactions.push({
@@ -112,7 +132,7 @@ export async function getTransactions(): Promise<{ transactions: Transaction[]; 
         nopek: cell(row, 3),
         tripNumber: cell(row, 5),
         airline: cell(row, 6),
-        bookingCode: cell(row, 7),
+        bookingCode,
         purchase,
         refund,
         transferAmount: numeric(row[10]),
